@@ -53,6 +53,7 @@ Resources:
           Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/CloudWatchFullAccess
+        # managed policy to allow our EC2 instance to access CodeDeploy
         - arn:aws:iam::aws:policy/service-role/AmazonEC2RoleforAWSCodeDeploy
       Tags:
         - Key: Name
@@ -125,17 +126,19 @@ Resources:
             nvm use v12.7.0
             
             # Download latest code, unzip it into /home/ec2-user/app
-#             wget https://github.com/diethardsteiner/aws-bootstrap/archive/master.zip
-#             unzip master.zip
-#             mv aws-bootstrap-master app
+            # wget https://github.com/diethardsteiner/aws-bootstrap/archive/master.zip
+            # unzip master.zip
+            # mv aws-bootstrap-master app
+            # this is covered now via continuous deployment
             
             # Create log directory
             mkdir -p /home/ec2-user/app/logs
             
             # Run server
-#             cd app
-#             npm install
-#             npm start
+            # cd app
+            # npm install
+            # npm start
+            # this is covered now via continuous deployment
           EOF
           
           chown ec2-user:ec2-user /tmp/install_script.sh
@@ -164,8 +167,8 @@ Resources:
               - codedeploy.amazonaws.com
               - codebuild.amazonaws.com
           Action: sts:AssumeRole
-        ManagedPolicyArns:
-          - arn:aws:iam::aws:policy/PowerUserAccess
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/PowerUserAccess
   BuildProject:
     Type: AWS::CodeBuild::Project
     Properties:
@@ -203,7 +206,7 @@ Resources:
   Pipeline:
     Type: AWS::CodePipeline::Pipeline
     Properties:
-      Name: !Ref AWS:StackName
+      Name: !Ref AWS::StackName
       ArtifactStore:
         Location: !Ref CodePipelineBucket
         Type: S3
@@ -224,38 +227,38 @@ Resources:
                 Repo: !Ref GitHubRepo
                 Branch: !Ref GitHubBranch
                 OAuthToken: !Ref GitHubPersonalAccessToken
-                # we don't need to pull since we set up a webhook
-                PullForSourceChanges: false
+                # we don't need to poll since we set up a webhook
+                PollForSourceChanges: false
               RunOrder: 1
+        - Name: Build
+          Actions:
             - Name: Build
-              Actions:
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: 1
+                Provider: CodeBuild
+              InputArtifacts:
+                - Name: Source
+              OutputArtifacts:
                 - Name: Build
-                  ActionTypeId:
-                    Category: Build
-                    Owner: AWS
-                    Version: 1
-                    Provider: CodeBuild
-                  InputArtifacts:
-                    - Name: Source
-                  OutputArtifacts:
-                    - Name: Build
-                  Configuration:
-                    ProjectName: !Ref BuildProject
-                  RunOrder: 1
-              - Name: Staging
-                Actions:
-                  - Name: Staging
-                    InputArtifacts:
-                      - Name: Build
-                    ActionTypeId:
-                      Category: Deploy
-                      Owner: AWS
-                      Version: 1
-                      Provider: CodeDeploy
-                    Configuration:
-                      ApplicationName: !Ref DeploymentApplication
-                      DeploymentGroupName: !Ref StagingDeploymentGroup
-                    RunOrder: 1
+              Configuration:
+                ProjectName: !Ref BuildProject
+              RunOrder: 1
+        - Name: Staging
+          Actions:
+            - Name: Staging
+              InputArtifacts:
+                - Name: Build
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Version: 1
+                Provider: CodeDeploy
+              Configuration:
+                ApplicationName: !Ref DeploymentApplication
+                DeploymentGroupName: !Ref StagingDeploymentGroup
+              RunOrder: 1
 
   PipelineWebhook:
     Type: AWS::CodePipeline::Webhook
