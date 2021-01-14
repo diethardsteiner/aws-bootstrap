@@ -267,7 +267,7 @@ Resources:
       AuthenticationConfiguration:
         SecretToken: !Ref GitHubPersonalAccessToken
       Filters:
-        - JsonPath: $.Ref
+        - JsonPath: $.ref
           MatchEquals: 'refs/heads/{Branch}'
       TargetPipeline: !Ref Pipeline
       TargetAction: Source
