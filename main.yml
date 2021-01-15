@@ -55,6 +55,14 @@ Resources:
         - arn:aws:iam::aws:policy/CloudWatchFullAccess
         # managed policy to allow our EC2 instance to access CodeDeploy
         - arn:aws:iam::aws:policy/service-role/AmazonEC2RoleforAWSCodeDeploy
+      Policies:
+        - PolicyName: ec2DescribeTags
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: 'ec2:DescribeTags'
+                Resource: '*'
       Tags:
         - Key: Name
           Value: !Ref AWS::StackName
@@ -69,91 +77,30 @@ Resources:
       ResourceSignal:
         Timeout: PT15m
         Count: 1
-    Metadata:
-      AWS::CloudFormation::Init:
-        config:
-          packages:
-            yum:
-              # CodeDeploy agent requires ruby
-              ruby: []
-              wget: []
-              unzip: []
-          files:
-            /home/ec2-user/install:
-              source: !Sub "https://aws-codedeploy-${AWS::Region}.s3.amazonaws.com/latest/install"
-              mode: '000755'
-          commands:
-            # install CodeDeploy agent
-            00-install-cd-agent:
-              command: './install auto'
-              cwd: 'home/ec2-user/'
     Properties:
-      ImageId: !Ref EC2AMI
-      InstanceType: !Ref EC2InstanceType
-      IamInstanceProfile: !Ref InstanceProfile
-      Monitoring: true
-      SecurityGroupIds:
-        - !GetAtt SecurityGroup.GroupId
-      UserData:
-        Fn::Base64: !Sub |
-          #!/bin/bash -xe
-          # send script output to /tmp so we can debug boot failures
-          exec > /tmp/userdata.log 2>&1
-          
-          # Update all packages
-          yum -y update
-          
-          # Get latest cnf script
-          # https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/best-practices.html#cfninit
-          yum install -y aws-cfn-bootstrap
-          
-          # Have CloudFormation isntall any files and packages from the metadata section
-          /opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --region ${AWS::Region} --resource Instance
-          
-          cat > /tmp/install_script.sh << EOF
-            # START
-            echo "Setting up NodeJS Environment"
-            curl https://raw.githubusercontent.com/nvm-sh/nvm/v0.34.0/install.sh | bash
-            
-            # Dot source the files to ensure that variables are available
-            # within the current shell
-            . /home/ec2-user/.nvm/nvm.sh
-            . /home/ec2-user/.bashrc
-            
-            # Install NVM, NPM, Node.JS
-            nvm alias default v12.7.0
-            nvm install v12.7.0
-            nvm use v12.7.0
-            
-            # Download latest code, unzip it into /home/ec2-user/app
-            # wget https://github.com/diethardsteiner/aws-bootstrap/archive/master.zip
-            # unzip master.zip
-            # mv aws-bootstrap-master app
-            # this is covered now via continuous deployment
-            
-            # Create log directory
-            mkdir -p /home/ec2-user/app/logs
-            
-            # Run server
-            # cd app
-            # npm install
-            # npm start
-            # this is covered now via continuous deployment
-          EOF
-          
-          chown ec2-user:ec2-user /tmp/install_script.sh
-          chmod a+x /tmp/install_script.sh
-          sleep 1
-          # run the install script as the ec2-user
-          su - ec2-user -c "/tmp/install_script.sh"
-          
-          # Signal to CloudFormation that the instance is ready
-          /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --region ${AWS::Region} --resource Instance
-                 
+      LaunchTemplate:
+        LaunchTemplateId: !Ref InstanceLaunchTemplate
+        # Each time we update our launch template, it will get a new version number
+        # We always want to get the latest:
+        Version: !GetAtt InstanceLaunchTemplate.LatestVersionNumber                 
       Tags:
         - Key: Name
           Value: !Ref AWS::StackName
-          
+  Instance2:
+    Type: 'AWS::EC2::Instance'
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: PT15m
+        Count: 1
+    Properties:
+      LaunchTemplate:
+        LaunchTemplateId: !Ref InstanceLaunchTemplate
+        # Each time we update our launch template, it will get a new version number
+        # We always want to get the latest:
+        Version: !GetAtt InstanceLaunchTemplate.LatestVersionNumber                 
+      Tags:
+        - Key: Name
+          Value: !Ref AWS::StackName          
   DeploymentRole:
     Type: AWS::IAM::Role
     Properties:
@@ -275,11 +222,101 @@ Resources:
       TargetPipelineVersion: !GetAtt Pipeline.Version
       RegisterWithThirdParty: true
       
+  InstanceLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Metadata:
+      AWS::CloudFormation::Init:
+        config:
+          packages:
+            yum:
+              # CodeDeploy agent requires ruby
+              ruby: []
+              jq: []
+          files:
+            /home/ec2-user/install:
+              source: !Sub "https://aws-codedeploy-${AWS::Region}.s3.amazonaws.com/latest/install"
+              mode: '000755'
+          commands:
+            # install CodeDeploy agent
+            00-install-cd-agent:
+              command: './install auto'
+              cwd: 'home/ec2-user/'
+    Properties:
+      LaunchTemplateName: !Sub 'LaunchTemplate_${AWS::StackName}'
+      LaunchTemplateData:
+        ImageId: !Ref EC2AMI
+        InstanceType: !Ref EC2InstanceType
+        IamInstanceProfile: !Ref InstanceProfile
+        Monitoring: true
+        SecurityGroupIds:
+          - !GetAtt SecurityGroup.GroupId
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash -xe
+            # send script output to /tmp so we can debug boot failures
+            exec > /tmp/userdata.log 2>&1
+            
+            # Update all packages
+            yum -y update
+            
+            # Get latest cnf script
+            # https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/best-practices.html#cfninit
+            yum install -y aws-cfn-bootstrap
+            
+            cat > /tmp/install_script.sh << EOF
+              # START
+              echo "Setting up NodeJS Environment"
+              curl https://raw.githubusercontent.com/nvm-sh/nvm/v0.34.0/install.sh | bash
+              
+              # Dot source the files to ensure that variables are available
+              # within the current shell
+              . /home/ec2-user/.nvm/nvm.sh
+              . /home/ec2-user/.bashrc
+              
+              # Install NVM, NPM, Node.JS
+              nvm alias default v12.7.0
+              nvm install v12.7.0
+              nvm use v12.7.0
+              
+              # Create log directory
+              mkdir -p /home/ec2-user/app/logs
+              
+              # Run server
+              # cd app
+              # npm install
+              # npm start
+              # this is covered now via continuous deployment
+            EOF
+            
+            chown ec2-user:ec2-user /tmp/install_script.sh
+            chmod a+x /tmp/install_script.sh
+            sleep 1
+            # run the install script as the ec2-user
+            su - ec2-user -c "/tmp/install_script.sh"
+            
+            # Have CloudFormation isntall any files and packages from the metadata section
+            /opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --region ${AWS::Region} --resource InstanceLaunchTemplate
+            
+            # Query the EC2 metadata service for this instance's instance-id
+            export INSTANCE_ID=`curl -s http://169.254.169.254/latest/metadata/instance-id`
+            
+            # Query EC2 describeTags method and pull out CFN Logical ID for this instance
+            export LOGICAL_ID=`aws --region ${AWS::Region} ec2 describe-tags \
+              --filters "Name=resource-id,Values=${!INSTANCE_ID}" \
+                        "Name=key,Values=aws:cloudformation:logical-id" \
+              | jq -r ".Tags[0].Value"` 
+            
+            # Signal to CloudFormation that the instance is ready
+            /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --region ${AWS::Region} --resource ${!LOGICAL_ID}   
 Outputs:
-  InstanceEndpoint:
+  InstanceEndpoint1:
       Description: The DNS Name for the created instance
       Value: !Sub "http://${Instance.PublicDnsName}:8080"
       Export:
         Name: InstanceEndpoint
-
+  InstanceEndpoint2:
+      Description: The DNS Name for the created instance
+      Value: !Sub "http://${Instance2.PublicDnsName}:8080"
+      Export:
+        Name: InstanceEndpoint2
 
