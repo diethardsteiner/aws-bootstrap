@@ -27,11 +27,16 @@ Resources:
   SecurityGroup:
     Type: 'AWS::EC2::SecurityGroup'
     Properties:
+      VpcId: !Ref VPC
       GroupDescription: !Sub 'Internal Security group for ${AWS::StackName}'
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 8080
           ToPort: 8080
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
           CidrIp: 0.0.0.0/0
         - IpProtocol: tcp
           FromPort: 22
@@ -78,6 +83,7 @@ Resources:
         Timeout: PT15m
         Count: 1
     Properties:
+      SubnetId: !Ref SubnetAZ1
       LaunchTemplate:
         LaunchTemplateId: !Ref InstanceLaunchTemplate
         # Each time we update our launch template, it will get a new version number
@@ -93,6 +99,7 @@ Resources:
         Timeout: PT15m
         Count: 1
     Properties:
+      SubnetId: !Ref SubnetAZ2
       LaunchTemplate:
         LaunchTemplateId: !Ref InstanceLaunchTemplate
         # Each time we update our launch template, it will get a new version number
@@ -246,8 +253,10 @@ Resources:
       LaunchTemplateData:
         ImageId: !Ref EC2AMI
         InstanceType: !Ref EC2InstanceType
-        IamInstanceProfile: !Ref InstanceProfile
-        Monitoring: true
+        IamInstanceProfile: 
+          Arn: !GetAtt InstanceProfile.Arn
+        Monitoring: 
+          Enabled: true
         SecurityGroupIds:
           - !GetAtt SecurityGroup.GroupId
         UserData:
@@ -298,7 +307,7 @@ Resources:
             /opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --region ${AWS::Region} --resource InstanceLaunchTemplate
             
             # Query the EC2 metadata service for this instance's instance-id
-            export INSTANCE_ID=`curl -s http://169.254.169.254/latest/metadata/instance-id`
+            export INSTANCE_ID=`curl -s http://169.254.169.254/latest/meta-data/instance-id`
             
             # Query EC2 describeTags method and pull out CFN Logical ID for this instance
             export LOGICAL_ID=`aws --region ${AWS::Region} ec2 describe-tags \
@@ -307,16 +316,128 @@ Resources:
               | jq -r ".Tags[0].Value"` 
             
             # Signal to CloudFormation that the instance is ready
-            /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --region ${AWS::Region} --resource ${!LOGICAL_ID}   
-Outputs:
-  InstanceEndpoint1:
-      Description: The DNS Name for the created instance
-      Value: !Sub "http://${Instance.PublicDnsName}:8080"
-      Export:
-        Name: InstanceEndpoint
-  InstanceEndpoint2:
-      Description: The DNS Name for the created instance
-      Value: !Sub "http://${Instance2.PublicDnsName}:8080"
-      Export:
-        Name: InstanceEndpoint2
+            /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --region ${AWS::Region} --resource ${!LOGICAL_ID} 
 
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Ref AWS::StackName
+  
+  SubnetAZ1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      CidrBlock: 10.0.0.0/18
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Ref AWS::StackName
+        - Key: AZ
+          Value: !Select [ 0, !GetAZs '' ]
+          
+  SubnetAZ2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [ 1, !GetAZs '' ]
+      CidrBlock: 10.0.64.0/18
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Ref AWS::StackName
+        - Key: AZ
+          Value: !Select [ 1, !GetAZs '' ]
+          
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Ref AWS::StackName
+          
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref VPC
+      
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Ref AWS::StackName
+  
+  DefaultPuplicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref RouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+  
+  SubnetRouteTableAssociationAZ1:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref RouteTable
+      SubnetId: !Ref SubnetAZ1
+      
+  SubnetRouteTableAssociationAZ1:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref RouteTable
+      SubnetId: !Ref SubnetAZ2
+  
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Type: application
+      Scheme: internet-facing
+      SecurityGroups:
+        - !GetAtt SecurityGroup.GroupId
+      Subnets:
+        - !Ref SubnetAZ1
+        - !Ref SubnetAZ2
+      Tags:
+        - Key: Name
+          Value: !Ref AWS::StackName
+  
+  LoadBalancerListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref LoadBalancerTargetGroup
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 80
+      Protocol: HTTP
+ 
+  LoadBalancerTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      TargetType: instance
+      Port: 8080
+      Protocol: HTTP
+      VpcId: !Ref VPC
+      HealthCheckEnabled: true
+      HealthCheckProtocol: HTTP
+      Targets:
+        - Id: !Ref Instance
+        - Id: !Ref Instance2
+      Tags:
+        - Key: Name
+          Value: !Ref AWS::StackName
+  
+Outputs:
+  LBEndpoint1:
+      Description: The DNS Name for the LB
+      Value: !Sub "http://${LoadBalancer.DNSName}:80"
+      Export:
+        Name: LBEndpoint
