@@ -18,7 +18,11 @@ GH_OWNER=$(cat ~/.github/aws-bootstrap-owner)
 GH_REPO=$(cat ~/.github/aws-bootstrap-repo)
 GH_BRANCH=master
 
-# Deploy static resources
+CFN_BUCKET="$STACK_NAME-cfn-$AWS_ACCOUNT_ID"
+
+# DEPLOY STATIC RESOURCES
+# - S3 bucket for CodePipeline artifacts
+# - The S3 bucket for CloudFormation templates
 echo -e "\n\n=========== Deploying setup.yml ============"
 
 aws cloudformation deploy \
@@ -29,16 +33,34 @@ aws cloudformation deploy \
    --no-fail-on-empty-changeset \
    --capabilities CAPABILITY_NAMED_IAM \
    --parameter-overrides \
-     CodePipelineBucket=$CODEPIPELINE_BUCKET
+     CodePipelineBucket=$CODEPIPELINE_BUCKET \
+     CloudFormationBucket=$CFN_BUCKET
+     
+# PACKAGE UP CLOUDFORMATION TEMPLATES INTO AN S3 BUCKET
+echo -e "\n\n=========== Packaging main.yml ============"
+mkdir -p ./cfn_output
 
-# Deploy the CloudFormation template
+PACKAGE_ERR="$(aws cloudformation package \
+   --region $REGION \
+   --profile $CLI_PROFILE \
+   --template main.yml \
+   --s3-bucket $CFN_BUCKET \
+   --output-template-file ./cfn_output/main.yml 2>&1)"
+
+if ! [[ $PACKAGE_ERR =~ "Successfully packaged artifacts" ]]; then
+  echo "ERROR while running 'aws cloudformation package' command:"
+  echo $PACKAGE_ERR
+  exit 1
+fi
+
+# DEPLOY THE CLOUDFORMATION TEMPLATE
 echo -e "\n\n=========== Deploying main.yml ============"
 
 aws cloudformation deploy \
    --region $REGION \
    --profile $CLI_PROFILE \
    --stack-name $STACK_NAME \
-   --template-file main.yml \
+   --template-file ./cfn_output/main.yml \
    --no-fail-on-empty-changeset \
    --capabilities CAPABILITY_NAMED_IAM \
    --parameter-overrides \
